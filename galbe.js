@@ -330,39 +330,61 @@
       function showPts() { verts.forEach(p => { p.visible = mode === 'point'; }); }
       setTimeout(ensureEdges, 50);
       let mode = 'objet'; const sel = new Map();
-      const refresh = () => { selEl.textContent = sel.size ? 'Sélection : ' + [...sel.keys()].join(', ') : 'Aucune sélection'; };
+      const SK = 'galbe-sel-' + JSON.stringify(spec.objects).length + '-' + spec.objects.map(o => o.id).join(',');
+      const save = () => { try { root.localStorage.setItem(SK, JSON.stringify({ mode, keys: [...sel.keys()], cmd: cmd.value })); } catch (e) { } };
+      const refresh = () => { selEl.textContent = sel.size ? 'Sélection : ' + [...sel.keys()].join(', ') : 'Aucune sélection'; save(); };
       const clearSel = () => { sel.forEach(s => s(false)); sel.clear(); refresh(); };
       const toggle = (k, f) => { if (sel.has(k)) { sel.get(k)(false); sel.delete(k); } else { f(true); sel.set(k, f); } err.textContent = ''; refresh(); };
-      refresh();
+      const hiObj = m => on => m.material.forEach(x => x.color.setHex(on ? COL.hl : COL.base));
+      const hiMat = mt => on => mt.color.setHex(on ? COL.hl : COL.base);
+      const hiLine = l => on => l.material.color.setHex(on ? COL.hl : COL.edge);
+      const hiPt = p => on => { p.material.color.setHex(on ? COL.hl : COL.edge); p.material.size = on ? 13 : 9; };
+      function setMode(md) { mode = md; host.querySelectorAll('[data-m]').forEach(x => x.classList.toggle('on', x.dataset.m === md)); if (md === 'arete' || md === 'point') ensureEdges(); showPts(); }
+      function restore() {
+        let st = null; try { st = JSON.parse(root.localStorage.getItem(SK) || 'null'); } catch (e) { }
+        if (!st) { refresh(); return; }
+        setMode(st.mode || 'objet'); if (st.cmd) cmd.value = st.cmd;
+        for (const k of st.keys || []) {
+          const oid = k.split('/')[0], m = meshes.find(x => x.userData.oid === oid); if (!m) continue;
+          const rest = k.slice(oid.length + 1);
+          let f = null;
+          if (!rest) f = hiObj(m);
+          else if (rest.startsWith('face ')) { const mt = m.material.find(x => x.userData.name === rest.slice(5)); if (mt) f = hiMat(mt); }
+          else { ensureEdges(); const l = edges.concat(verts).find(x => x.parent === m && x.userData.name === rest); if (l) f = l.isPoints ? hiPt(l) : hiLine(l); }
+          if (f) { f(true); sel.set(k, f); }
+        }
+        refresh();
+      }
+      restore();
       host.querySelectorAll('[data-m]').forEach(b => b.onclick = () => {
-        mode = b.dataset.m; host.querySelectorAll('[data-m]').forEach(x => x.classList.toggle('on', x === b));
-        if (mode === 'arete' || mode === 'point') ensureEdges(); clearSel(); showPts();
+        if (b.dataset.m === mode) return; clearSel(); setMode(b.dataset.m); save();
       });
       host.querySelector('[data-clr]').onclick = clearSel;
       const rc = new THREE.Raycaster(), mv = new THREE.Vector2(); let down = null;
-      renderer.domElement.addEventListener('pointerdown', e => { down = [e.clientX, e.clientY]; });
+      renderer.domElement.addEventListener('pointerdown', e => { down = e.isPrimary ? [e.clientX, e.clientY] : null; });
+      renderer.domElement.addEventListener('pointercancel', () => { down = null; });
       renderer.domElement.addEventListener('pointerup', e => {
         if (!down) return; const d = Math.hypot(e.clientX - down[0], e.clientY - down[1]); down = null; if (d > 6) return;
         const R = renderer.domElement.getBoundingClientRect();
         mv.set((e.clientX - R.left) / R.width * 2 - 1, -(e.clientY - R.top) / R.height * 2 + 1); rc.setFromCamera(mv, camera);
         if (mode === 'point') {
           ensureEdges(); rc.params.Points.threshold = camera.position.distanceTo(controls.target) / 50;
-          const h = rc.intersectObjects(verts, false)[0]; if (!h) return clearSel();
-          const p = h.object; toggle(p.parent.userData.oid + '/' + p.userData.name, on => { p.material.color.setHex(on ? COL.hl : COL.edge); p.material.size = on ? 13 : 9; }); return;
+          const h = rc.intersectObjects(verts, false)[0]; if (!h) return;
+          const p = h.object; toggle(p.parent.userData.oid + '/' + p.userData.name, hiPt(p)); return;
         }
         if (mode === 'arete') {
           ensureEdges(); rc.params.Line.threshold = camera.position.distanceTo(controls.target) / 80;
-          const h = rc.intersectObjects(edges, false)[0]; if (!h) return clearSel();
-          const l = h.object; toggle(l.parent.userData.oid + '/' + l.userData.name, on => l.material.color.setHex(on ? COL.hl : COL.edge)); return;
+          const h = rc.intersectObjects(edges, false)[0]; if (!h) return;
+          const l = h.object; toggle(l.parent.userData.oid + '/' + l.userData.name, hiLine(l)); return;
         }
-        const h = rc.intersectObjects(meshes, false)[0]; if (!h) return clearSel();
+        const h = rc.intersectObjects(meshes, false)[0]; if (!h) return;
         const m = h.object, id = m.userData.oid;
-        if (mode === 'objet') toggle(id, on => m.material.forEach(x => x.color.setHex(on ? COL.hl : COL.base)));
-        else { const mt = m.material[h.face.materialIndex]; toggle(id + '/face ' + mt.userData.name, on => mt.color.setHex(on ? COL.hl : COL.base)); }
+        if (mode === 'objet') toggle(id, hiObj(m));
+        else { const mt = m.material[h.face.materialIndex]; toggle(id + '/face ' + mt.userData.name, hiMat(mt)); }
       });
-      cmd.oninput = () => { err.textContent = ''; };
+      cmd.oninput = () => { err.textContent = ''; save(); };
       host.querySelector('[data-ok]').onclick = () => {
-        if (!sel.size) { err.textContent = "Sélectionne d'abord un élément"; return; }
+        if (!sel.size) { err.textContent = "Aucune sélection : touche une pièce dans la vue"; return; }
         if (!cmd.value.trim()) { err.textContent = 'Écris une consigne'; return; }
         root.sendPrompt('Sélection : ' + [...sel.keys()].join(', ') + ' → ' + cmd.value.trim());
       };
@@ -371,5 +393,5 @@
     } catch (e) { selEl.textContent = ''; err.textContent = 'Erreur : ' + e.message; }
   }
 
-  root.Galbe = { mount, CSG, box, cyl, buildObject, toMesh, edgesFor, version: '1.2.0' };
+  root.Galbe = { mount, CSG, box, cyl, buildObject, toMesh, edgesFor, version: '1.3.0' };
 })(typeof window !== 'undefined' ? window : globalThis);

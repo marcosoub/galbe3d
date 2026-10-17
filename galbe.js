@@ -297,7 +297,7 @@
   }
 
   // ---------- Interface ----------
-  const CSS = '.g3-bar{display:flex;gap:6px;margin:0 0 8px;align-items:center}.g3-b{font-size:13px;padding:6px 12px}' +
+  const CSS = '.g3-bar{display:flex;gap:6px;margin:0 0 8px;align-items:center}.g3-b{font-size:13px;padding:6px 10px}' +
     '.g3-b.on,.g3-b.on:hover{background:var(--fill-accent,#378ADD)!important;color:var(--on-accent,#fff)!important;border-color:var(--fill-accent,#378ADD)!important}' +
     '.g3-vp{height:340px;border:0.5px solid var(--border);border-radius:12px;touch-action:none;overflow:hidden}' +
     '.g3-sel{font-size:13px;color:var(--text-secondary);margin:8px 0;min-height:20px}' +
@@ -309,6 +309,7 @@
     const st = document.createElement('style'); st.textContent = CSS; document.head.appendChild(st);
     host.innerHTML = '<div class="g3-bar"><button class="g3-b on" data-m="objet">Objet</button><button class="g3-b" data-m="face">Face</button>' +
       '<button class="g3-b" data-m="arete">Arête</button><button class="g3-b" data-m="point">Point</button><span style="flex:1"></span>' +
+      '<button class="g3-b" data-render aria-label="Rendu"><i class="ti ti-camera" aria-hidden="true"></i></button>' +
       '<button class="g3-b" data-clr aria-label="Effacer la sélection"><i class="ti ti-x" aria-hidden="true"></i></button></div>' +
       '<div class="g3-vp"></div><div class="g3-sel">Calcul…</div>' +
       '<div class="g3-row"><input placeholder="' + (spec.placeholder || 'congé de 2 mm') + '"><button data-ok>OK ↗</button></div><div class="g3-err"></div>';
@@ -322,12 +323,29 @@
       scene.add(new THREE.HemisphereLight(0xffffff, 0x888780, 0.85));
       const dl = new THREE.DirectionalLight(0xffffff, 0.6); dl.position.set(-60, 120, 90); scene.add(dl);
       const grid = new THREE.GridHelper(200, 20, 0x888780, 0xB4B2A9); grid.material.transparent = true; grid.material.opacity = 0.5; scene.add(grid);
+      // Mode rendu : ombres douces, sol d'ombre, lumière d'appoint.
+      renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      Object.assign(dl.shadow.camera, { left: -150, right: 150, top: 150, bottom: -150, near: 1, far: 600 });
+      dl.shadow.mapSize.set(2048, 2048); dl.shadow.bias = -0.0005; dl.shadow.radius = 4;
+      const fill = new THREE.DirectionalLight(0xffffff, 0.35); fill.position.set(90, 60, -80); fill.visible = false; scene.add(fill);
+      const ground = new THREE.Mesh(new THREE.PlaneGeometry(600, 600), new THREE.ShadowMaterial({ opacity: 0.22 }));
+      ground.rotation.x = -Math.PI / 2; ground.position.y = -0.01; ground.receiveShadow = true; ground.visible = false; scene.add(ground);
+      let rendu = false;
       const controls = new THREE.OrbitControls(camera, renderer.domElement);
       controls.target.set(...(cam.target || [0, 20, 0])); controls.enableDamping = true; controls.update();
       const meshes = [], edges = [], verts = []; let edgesDone = false;
-      spec.objects.forEach(ob => { const m = toMesh(THREE, buildObject(ob)); m.userData.oid = ob.id; scene.add(m); meshes.push(m); });
+      spec.objects.forEach(ob => { const m = toMesh(THREE, buildObject(ob)); m.userData.oid = ob.id; m.castShadow = true; m.receiveShadow = true; scene.add(m); meshes.push(m); });
       function ensureEdges() { if (edgesDone) return; edgesDone = true; meshes.forEach(m => { const ls = edgesFor(THREE, m); ls.forEach(l => { m.add(l); edges.push(l); }); ls.verts.forEach(p => { m.add(p); verts.push(p); }); }); showPts(); }
-      function showPts() { verts.forEach(p => { p.visible = mode === 'point'; }); }
+      function showPts() { verts.forEach(p => { p.visible = !rendu && mode === 'point'; }); edges.forEach(l => { l.visible = !rendu; }); }
+      function setRendu(on) {
+        rendu = on; host.querySelector('[data-render]').classList.toggle('on', on);
+        grid.visible = !on; ground.visible = on; fill.visible = on; dl.castShadow = on;
+        dl.intensity = on ? 0.75 : 0.6;
+        meshes.forEach(m => m.material.forEach(x => { x.roughness = on ? 0.5 : 0.6; x.needsUpdate = true; }));
+        sel.forEach(f => f(!on)); showPts();
+        selEl.textContent = on ? 'Mode rendu : touche l’appareil photo pour revenir à l’édition' : '';
+        if (!on) refresh();
+      }
       setTimeout(ensureEdges, 50);
       let mode = 'objet'; const sel = new Map();
       const SK = 'galbe-sel-' + JSON.stringify(spec.objects).length + '-' + spec.objects.map(o => o.id).join(',');
@@ -357,14 +375,16 @@
       }
       restore();
       host.querySelectorAll('[data-m]').forEach(b => b.onclick = () => {
+        if (rendu) setRendu(false);
         if (b.dataset.m === mode) return; clearSel(); setMode(b.dataset.m); save();
       });
-      host.querySelector('[data-clr]').onclick = clearSel;
+      host.querySelector('[data-clr]').onclick = () => { if (!rendu) clearSel(); };
+      host.querySelector('[data-render]').onclick = () => setRendu(!rendu);
       const rc = new THREE.Raycaster(), mv = new THREE.Vector2(); let down = null;
       renderer.domElement.addEventListener('pointerdown', e => { down = e.isPrimary ? [e.clientX, e.clientY] : null; });
       renderer.domElement.addEventListener('pointercancel', () => { down = null; });
       renderer.domElement.addEventListener('pointerup', e => {
-        if (!down) return; const d = Math.hypot(e.clientX - down[0], e.clientY - down[1]); down = null; if (d > 6) return;
+        if (!down || rendu) { down = null; return; } const d = Math.hypot(e.clientX - down[0], e.clientY - down[1]); down = null; if (d > 6) return;
         const R = renderer.domElement.getBoundingClientRect();
         mv.set((e.clientX - R.left) / R.width * 2 - 1, -(e.clientY - R.top) / R.height * 2 + 1); rc.setFromCamera(mv, camera);
         if (mode === 'point') {
@@ -393,5 +413,5 @@
     } catch (e) { selEl.textContent = ''; err.textContent = 'Erreur : ' + e.message; }
   }
 
-  root.Galbe = { mount, CSG, box, cyl, buildObject, toMesh, edgesFor, version: '1.3.0' };
+  root.Galbe = { mount, CSG, box, cyl, buildObject, toMesh, edgesFor, version: '1.4.0' };
 })(typeof window !== 'undefined' ? window : globalThis);

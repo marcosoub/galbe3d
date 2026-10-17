@@ -12,6 +12,7 @@
      { op:'fillet', axis:'x'|'y'|'z', edge:[x,y,z] (un point de l'arête), dir:[sx,sy,sz] (signes vers l'extérieur
        sur les deux autres axes, 0 sur l'axe de l'arête), len, r, name:'congé 1' }
      { op:'chamfer', même chose que fillet, d au lieu de r, name:'chanfrein 1' }
+   Modes de sélection : objet, face, arête, point (sommets où se rejoignent au moins trois faces).
    Les faces nommées '_' sont des faces techniques qui ne doivent pas rester visibles. */
 (function (root) {
   'use strict';
@@ -230,6 +231,8 @@
       }
     });
     const e = new THREE.EdgesGeometry(g, 1).attributes.position, out = new Map(), cp = new THREE.Vector3(), M = new THREE.Vector3();
+    const vmap = new Map(), vk = v => Math.round(v.x * 100) + ',' + Math.round(v.y * 100) + ',' + Math.round(v.z * 100);
+    const addV = (v, names) => { const k = vk(v); if (!vmap.has(k)) vmap.set(k, { p: v.clone(), f: new Set() }); names.forEach(n => vmap.get(k).f.add(n)); };
     for (let i = 0; i < e.count; i += 2) {
       const a = new THREE.Vector3().fromBufferAttribute(e, i), b = new THREE.Vector3().fromBufferAttribute(e, i + 1);
       const near = t => {
@@ -243,16 +246,27 @@
       if (s.size !== 2) continue;
       const k = [...s].sort().join(' / ');
       if (!out.has(k)) out.set(k, []); out.get(k).push(a, b);
+      addV(a, s); addV(b, s);
     }
-    return [...out].map(([k, pts]) => {
+    const lines = [...out].map(([k, pts]) => {
       const l = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: COL.edge }));
       l.userData.name = 'arête ' + k; return l;
     });
+    // Sommets : points où se rejoignent au moins trois faces.
+    const used = new Map();
+    lines.verts = [...vmap.values()].filter(v => v.f.size >= 3).map(v => {
+      let nm = 'point ' + [...v.f].sort().join(' / ');
+      const c = (used.get(nm) || 0) + 1; used.set(nm, c); if (c > 1) nm += ' #' + c;
+      const pt = new THREE.Points(new THREE.BufferGeometry().setFromPoints([v.p]),
+        new THREE.PointsMaterial({ color: COL.edge, size: 9, sizeAttenuation: false, depthTest: false }));
+      pt.userData.name = nm; pt.visible = false; pt.renderOrder = 2; return pt;
+    });
+    return lines;
   }
 
   // ---------- Interface ----------
-  const CSS = '.g3-bar{display:flex;gap:8px;margin:0 0 8px;align-items:center}.g3-b{font-size:13px;padding:6px 12px}' +
-    '.g3-b.on{background:var(--bg-accent);color:var(--text-accent);border-color:var(--border-accent)}' +
+  const CSS = '.g3-bar{display:flex;gap:6px;margin:0 0 8px;align-items:center}.g3-b{font-size:13px;padding:6px 12px}' +
+    '.g3-b.on,.g3-b.on:hover{background:var(--fill-accent,#378ADD)!important;color:var(--on-accent,#fff)!important;border-color:var(--fill-accent,#378ADD)!important}' +
     '.g3-vp{height:340px;border:0.5px solid var(--border);border-radius:12px;touch-action:none;overflow:hidden}' +
     '.g3-sel{font-size:13px;color:var(--text-secondary);margin:8px 0;min-height:20px}' +
     '.g3-row{display:flex;gap:8px}.g3-row input{flex:1;min-width:0}' +
@@ -262,7 +276,7 @@
     const THREE = root.THREE, host = document.getElementById(elId);
     const st = document.createElement('style'); st.textContent = CSS; document.head.appendChild(st);
     host.innerHTML = '<div class="g3-bar"><button class="g3-b on" data-m="objet">Objet</button><button class="g3-b" data-m="face">Face</button>' +
-      '<button class="g3-b" data-m="arete">Arête</button><span style="flex:1"></span>' +
+      '<button class="g3-b" data-m="arete">Arête</button><button class="g3-b" data-m="point">Point</button><span style="flex:1"></span>' +
       '<button class="g3-b" data-clr aria-label="Effacer la sélection"><i class="ti ti-x" aria-hidden="true"></i></button></div>' +
       '<div class="g3-vp"></div><div class="g3-sel">Calcul…</div>' +
       '<div class="g3-row"><input placeholder="' + (spec.placeholder || 'congé de 2 mm') + '"><button data-ok>OK ↗</button></div><div class="g3-err"></div>';
@@ -278,9 +292,10 @@
       const grid = new THREE.GridHelper(200, 20, 0x888780, 0xB4B2A9); grid.material.transparent = true; grid.material.opacity = 0.5; scene.add(grid);
       const controls = new THREE.OrbitControls(camera, renderer.domElement);
       controls.target.set(...(cam.target || [0, 20, 0])); controls.enableDamping = true; controls.update();
-      const meshes = [], edges = []; let edgesDone = false;
+      const meshes = [], edges = [], verts = []; let edgesDone = false;
       spec.objects.forEach(ob => { const m = toMesh(THREE, buildObject(ob)); m.userData.oid = ob.id; scene.add(m); meshes.push(m); });
-      function ensureEdges() { if (edgesDone) return; edgesDone = true; meshes.forEach(m => edgesFor(THREE, m).forEach(l => { m.add(l); edges.push(l); })); }
+      function ensureEdges() { if (edgesDone) return; edgesDone = true; meshes.forEach(m => { const ls = edgesFor(THREE, m); ls.forEach(l => { m.add(l); edges.push(l); }); ls.verts.forEach(p => { m.add(p); verts.push(p); }); }); showPts(); }
+      function showPts() { verts.forEach(p => { p.visible = mode === 'point'; }); }
       setTimeout(ensureEdges, 50);
       let mode = 'objet'; const sel = new Map();
       const refresh = () => { selEl.textContent = sel.size ? 'Sélection : ' + [...sel.keys()].join(', ') : 'Aucune sélection'; };
@@ -289,7 +304,7 @@
       refresh();
       host.querySelectorAll('[data-m]').forEach(b => b.onclick = () => {
         mode = b.dataset.m; host.querySelectorAll('[data-m]').forEach(x => x.classList.toggle('on', x === b));
-        if (mode === 'arete') ensureEdges(); clearSel();
+        if (mode === 'arete' || mode === 'point') ensureEdges(); clearSel(); showPts();
       });
       host.querySelector('[data-clr]').onclick = clearSel;
       const rc = new THREE.Raycaster(), mv = new THREE.Vector2(); let down = null;
@@ -298,6 +313,11 @@
         if (!down) return; const d = Math.hypot(e.clientX - down[0], e.clientY - down[1]); down = null; if (d > 6) return;
         const R = renderer.domElement.getBoundingClientRect();
         mv.set((e.clientX - R.left) / R.width * 2 - 1, -(e.clientY - R.top) / R.height * 2 + 1); rc.setFromCamera(mv, camera);
+        if (mode === 'point') {
+          ensureEdges(); rc.params.Points.threshold = camera.position.distanceTo(controls.target) / 50;
+          const h = rc.intersectObjects(verts, false)[0]; if (!h) return clearSel();
+          const p = h.object; toggle(p.parent.userData.oid + '/' + p.userData.name, on => { p.material.color.setHex(on ? COL.hl : COL.edge); p.material.size = on ? 13 : 9; }); return;
+        }
         if (mode === 'arete') {
           ensureEdges(); rc.params.Line.threshold = camera.position.distanceTo(controls.target) / 80;
           const h = rc.intersectObjects(edges, false)[0]; if (!h) return clearSel();
@@ -319,5 +339,5 @@
     } catch (e) { selEl.textContent = ''; err.textContent = 'Erreur : ' + e.message; }
   }
 
-  root.Galbe = { mount, CSG, box, cyl, buildObject, toMesh, edgesFor, version: '1.0.0' };
+  root.Galbe = { mount, CSG, box, cyl, buildObject, toMesh, edgesFor, version: '1.1.0' };
 })(typeof window !== 'undefined' ? window : globalThis);

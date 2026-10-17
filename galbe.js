@@ -8,6 +8,8 @@
    Opérations (la première crée le solide, les suivantes s'appliquent dans l'ordre) :
      { t:'box', size:[sx,sy,sz], pos:[x,y,z], prefix?:'bossage 1 ', names?:[6 noms] }
      { t:'cyl', r, h, pos, axis:'x'|'y'|'z', seg?:48, prefix?, names?:[latérale, +axe, -axe] }
+     { t:'dome', r, h, pos (centre de la base), axis, seg?:10, rings?:3, names?:[surface, base] }
+     { op:'merge', ...primitive } : ajoute sans calcul booléen (pièces disjointes, textures, picots en grand nombre)
      { op:'add'|'sub'|'inter', ...primitive ci-dessus }
      { op:'fillet', axis:'x'|'y'|'z', edge:[x,y,z] (un point de l'arête), dir:[sx,sy,sz] (signes vers l'extérieur
        sur les deux autres axes, 0 sur l'axe de l'arête), len, r, name:'congé 1' }
@@ -134,9 +136,38 @@
     ps.push(new Po(top, names[1]), new Po(bot, names[2]));
     return ps;
   }
+  // Fixe l'orientation d'un solide fermé (normales vers l'extérieur) via son volume signé.
+  function orient(faces) {
+    let vol = 0;
+    faces.forEach(f => { for (let i = 1; i < f.v.length - 1; i++) vol += f.v[0].p.dot(f.v[i].p.cross(f.v[i + 1].p)); });
+    return faces.map(f => {
+      const vs = vol < 0 ? f.v.slice().reverse() : f.v;
+      return new Po(vs, f.s);
+    });
+  }
+  // Dôme (demi-ellipsoïde) : base de rayon r posée en pos, hauteur h vers +axe.
+  function dome(r, h, c, axis, names, seg, rings) {
+    const T = ORIENT[axis || 'y'], C = new V(c[0], c[1], c[2]), faces = [];
+    const pt = (ph, th) => new V(r * Math.cos(ph) * Math.cos(th), h * Math.sin(ph), r * Math.cos(ph) * Math.sin(th));
+    const nr = (ph, th) => new V(Math.cos(ph) * Math.cos(th) / r, Math.sin(ph) / h, Math.cos(ph) * Math.sin(th) / r).unit();
+    const X = (ph, th) => new Vx(T(pt(ph, th)).plus(C), T(nr(ph, th)));
+    for (let k = 0; k < rings; k++) {
+      const p0 = k / rings * Math.PI / 2, p1 = (k + 1) / rings * Math.PI / 2;
+      for (let i = 0; i < seg; i++) {
+        const t0 = i / seg * Math.PI * 2, t1 = (i + 1) / seg * Math.PI * 2;
+        const v = k === rings - 1 ? [X(p0, t0), X(p0, t1), X(p1, 0)] : [X(p0, t0), X(p0, t1), X(p1, t1), X(p1, t0)];
+        faces.push({ v, s: names[0] });
+      }
+    }
+    const base = [];
+    for (let i = 0; i < seg; i++) { const t = i / seg * Math.PI * 2; base.push(new Vx(T(pt(0, t)).plus(C), T(new V(0, -1, 0)))); }
+    faces.push({ v: base.reverse(), s: names[1] });
+    return orient(faces);
+  }
   function prim(o) {
     const pre = o.prefix || '';
     if (o.t === 'box') return box(o.size, o.pos, (o.names || FN.box.map(n => pre + n)));
+    if (o.t === 'dome') return dome(o.r, o.h, o.pos, o.axis, (o.names || [pre + 'surface', '_']), o.seg || 10, o.rings || 3);
     if (o.t === 'cyl') return cyl(o.r, o.h, o.pos, o.axis, (o.names || FN.cyl.map(n => pre + n)), o.seg || 48);
     throw new Error('Primitive inconnue : ' + o.t);
   }
@@ -176,6 +207,7 @@
       if (o.op === 'chamfer') { solid = CSG.sub(solid, chamferCutter(o)); continue; }
       piece = prim(o);
       if (!solid) { solid = piece; continue; }
+      if (o.op === 'merge') { solid = solid.concat(piece); continue; } // juxtaposition sans booléen (rapide)
       solid = CSG[o.op || 'add'](solid, piece);
     }
     return solid;
@@ -339,5 +371,5 @@
     } catch (e) { selEl.textContent = ''; err.textContent = 'Erreur : ' + e.message; }
   }
 
-  root.Galbe = { mount, CSG, box, cyl, buildObject, toMesh, edgesFor, version: '1.1.0' };
+  root.Galbe = { mount, CSG, box, cyl, buildObject, toMesh, edgesFor, version: '1.2.0' };
 })(typeof window !== 'undefined' ? window : globalThis);
